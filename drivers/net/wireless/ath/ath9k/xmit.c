@@ -14,6 +14,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include "linux/ieee80211.h"
+#include "mac.h"
+#include "net/mac80211.h"
 #include <linux/dma-mapping.h>
 #include "ath9k.h"
 #include "ar9003_mac.h"
@@ -1971,10 +1974,113 @@ void ath_tx_cleanupq(struct ath_softc *sc, struct ath_txq *txq)
 	sc->tx.txqsetup &= ~(1<<txq->axq_qnum);
 }
 
+// Almost one-to-one compared to other funcs but simplified and no annoying logging
+void ath_update_txq(struct ath_softc *sc, u16 queue, u8 tid) {
+	struct ath9k_tx_queue_info qi;
+	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
+	 const struct ieee80211_tx_queue_params *params = &sc->tx.extended_queue_properties[tid];
+	int ret;
+	ath9k_ps_wakeup(sc);
+	mutex_lock(&sc->mutex);
+
+	memset(&qi, 0, sizeof(struct ath9k_tx_queue_info));
+
+	qi.tqi_aifs = params->aifs;
+	qi.tqi_cwmin = params->cw_min;
+	qi.tqi_cwmax = params->cw_max;
+	qi.tqi_burstTime = params->txop * 32;
+
+
+	ath_update_max_aggr_framelen(sc, queue, qi.tqi_burstTime);
+	ret = ath_txq_update(sc, queue, &qi);
+	if (ret)
+		ath_err(common, "TXQ Update failed\n");
+
+	if (!ret)
+		sc->tx.txq[queue].current_tid = tid;
+
+	mutex_unlock(&sc->mutex);
+	ath9k_ps_restore(sc);
+}
+
+void ath_txq_schedule_empower(struct ath_softc *sc, struct ath_txq *txq) 
+{
+	struct ieee80211_hw *hw = sc->hw;
+	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
+	struct ieee80211_txq *queue;
+	struct ath_atx_tid *tid;
+	int ret;
+	u8 available_queues;
+	unsigned long fc;
+	unsigned long bc;
+	available_queues = 0;
+
+	if (test_bit(ATH_OP_HW_RESET, &common->op_flags))
+		return;
+
+	// Check if we have any empty queues
+	for (int i = 0; i < IEEE80211_NUM_ACS; i++) {
+		//TODO: locking
+		if (sc->tx.txq[i].pending_frames <= 0)
+			available_queues |= BIT(i);
+	}
+
+	spin_lock_bh(&sc->chan_lock);
+	rcu_read_lock();
+	if (sc->cur_chan->stopped)
+		goto out;
+
+	// What we will assume here is that each queue will be processed by the tasklet individually 
+	// (which should be the case based on how the old system worked, this function took a single txq and scheduled for a single AC)
+
+	// Ignore non-5gempower tids
+	// For each TID
+	for (int tid_n = IEEE80211_NUM_TIDS + sc->tx.next_tid; tid_n < IEEE80211_NUM_TIDS + FEMPOWER_NUM_QUEUES; tid_n++) {
+		// For each STA
+		ieee80211_txq_schedule_start(hw, tid_n);
+		while ((queue = ieee80211_next_txq(hw, tid_n))) {
+			bool force;
+			// Check if the queue has anything worthy of scheduling
+			ieee80211_txq_get_depth(queue, &fc, &bc);
+			// If there are no frames/bytes in queue and there are no frames to retry
+			if ((fc <= 0 || bc <= 0) && skb_queue_empty(&tid->retry_q)) {
+				// Return the queue to the scheduler so that it can be scheduled again
+				ieee80211_return_txq(hw, queue, false);
+				continue;
+			}
+			// Now we know we have a queue that has something worthy of scheduling. Check if we can schedule it at all.
+
+			tid = (struct ath_atx_tid *)queue->drv_priv;
+
+			// A match made in heaven! The current queue is configured properly, we can just let it do its thing.
+			if (txq->pending_frames <= 0) { // Not so perfect, but still works! We have to reconfigure the queue
+				ath_update_txq(sc, txq->axq_qnum, tid_n);
+			} else if (txq->pending_frames > 0 && txq->current_tid != tid_n) { // This means we can't do anything :/ 
+				sc->tx.next_tid = tid_n;
+				break;
+			}
+
+			ret = ath_tx_sched_aggr(sc, txq, tid);
+			ath_dbg(common, QUEUE, "ath_tx_sched_aggr returned %d\n", ret);
+
+			force = !skb_queue_empty(&tid->retry_q);
+			ieee80211_return_txq(hw, queue, force);
+			sc->tx.next_tid = tid_n + 1;
+
+		}
+		ieee80211_txq_schedule_end(hw, tid_n);
+	}
+
+	// spin_lock_bh(&sc->tx.rr_lock);
+out:
+	rcu_read_unlock();
+	spin_unlock_bh(&sc->chan_lock);
+}
+
 /* For each acq entry, for each tid, try to schedule packets
  * for transmit until ampdu_depth has reached min Q depth.
  */
-void ath_txq_schedule(struct ath_softc *sc, struct ath_txq *txq)
+void ath_txq_schedule_normal(struct ath_softc *sc, struct ath_txq *txq)
 {
 	struct ieee80211_hw *hw = sc->hw;
 	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
@@ -2011,6 +2117,23 @@ out:
 	rcu_read_unlock();
 	spin_unlock_bh(&sc->chan_lock);
 	ieee80211_txq_schedule_end(hw, txq->mac80211_qnum);
+}
+
+
+/* For each acq entry, for each tid, try to schedule packets
+ * for transmit until ampdu_depth has reached min Q depth.
+ */
+void ath_txq_schedule(struct ath_softc *sc, struct ath_txq *txq)
+{
+	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
+	// If this is the case, the queue that became free is a non-data queue. Forward that to the old scheduling function
+	if (txq->axq_qnum >= IEEE80211_NUM_ACS) {
+		ath_dbg(common, QUEUE, "Normal sched\n");
+		ath_txq_schedule_normal(sc, txq);
+	} else {
+		ath_dbg(common, QUEUE, "EMpower sched\n");
+		ath_txq_schedule_empower(sc, txq);
+	}
 }
 
 void ath_txq_schedule_all(struct ath_softc *sc)

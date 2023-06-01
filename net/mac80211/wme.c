@@ -164,6 +164,12 @@ u16 ieee80211_select_queue(struct ieee80211_sub_if_data *sdata,
 	else
 		qos = false;
 
+	// This means that the priority == 5gempower slice
+	// Because of the behaviour of cfg80211_classify8021d we can use this to distinguish slices from default TIDs
+	if (skb->priority > IEEE80211_NUM_TIDS && skb->priority < FEMPOWER_NUM_QUEUES) {
+		return skb->priority;
+	} 
+
 	if (!qos) {
 		skb->priority = 0; /* required for correct WPA/11i MIC */
 		return IEEE80211_AC_BE;
@@ -177,6 +183,7 @@ u16 ieee80211_select_queue(struct ieee80211_sub_if_data *sdata,
 	/* use the data classifier to determine what 802.1d tag the
 	 * data frame has */
 	qos_map = rcu_dereference(sdata->qos_map);
+	// The return value of this will always be 0-IEEE80211_NUM_TIDS because of array_index_nospec clamping the return value
 	skb->priority = cfg80211_classify8021d(skb, qos_map ?
 					       &qos_map->qos_map : NULL);
 
@@ -195,13 +202,20 @@ void ieee80211_set_qos_hdr(struct ieee80211_sub_if_data *sdata,
 {
 	struct ieee80211_hdr *hdr = (void *)skb->data;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
-	u8 tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+	u8 tid;
 	u8 flags;
 	u8 *p;
+	// TODO: How do we handle this? We only have 4 bits because of the mask, can't represent all TIDs like this
+	// For now, default to 802.1D class = 0 (BE)
+	if (skb->priority >= IEEE80211_NUM_TIDS) {
+		tid = 0;// Best Effort
+	} else {
+		tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+	}
 
 	if (!ieee80211_is_data_qos(hdr->frame_control))
 		return;
-
+	// Gets a pointer to the traffic class field
 	p = ieee80211_get_qos_ctl(hdr);
 
 	/* don't overwrite the QoS field of injected frames */

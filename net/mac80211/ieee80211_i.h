@@ -1312,19 +1312,19 @@ struct ieee80211_local {
 	struct codel_params cparams;
 
 	/* protects active_txqs and txqi->schedule_order */
-	spinlock_t active_txq_lock[IEEE80211_NUM_ACS];
-	struct list_head active_txqs[IEEE80211_NUM_ACS];
-	u16 schedule_round[IEEE80211_NUM_ACS];
+	spinlock_t active_txq_lock[FEMPOWER_NUM_QUEUES];
+	struct list_head active_txqs[FEMPOWER_NUM_QUEUES];
+	u16 schedule_round[FEMPOWER_NUM_QUEUES];
 
 	/* serializes ieee80211_handle_wake_tx_queue */
 	spinlock_t handle_wake_tx_queue_lock;
 
 	u16 airtime_flags;
-	u32 aql_txq_limit_low[IEEE80211_NUM_ACS];
-	u32 aql_txq_limit_high[IEEE80211_NUM_ACS];
+	u32 aql_txq_limit_low[FEMPOWER_NUM_QUEUES];
+	u32 aql_txq_limit_high[FEMPOWER_NUM_QUEUES];
 	u32 aql_threshold;
 	atomic_t aql_total_pending_airtime;
-	atomic_t aql_ac_pending_airtime[IEEE80211_NUM_ACS];
+	atomic_t aql_ac_pending_airtime[FEMPOWER_NUM_QUEUES];
 
 	const struct ieee80211_ops *ops;
 
@@ -1334,8 +1334,8 @@ struct ieee80211_local {
 	 */
 	struct workqueue_struct *workqueue;
 
-	unsigned long queue_stop_reasons[IEEE80211_MAX_QUEUES];
-	int q_stop_reasons[IEEE80211_MAX_QUEUES][IEEE80211_QUEUE_STOP_REASONS];
+	unsigned long queue_stop_reasons[FEMPOWER_NUM_QUEUES];
+	int q_stop_reasons[FEMPOWER_NUM_QUEUES][IEEE80211_QUEUE_STOP_REASONS];
 	/* also used to protect ampdu_ac_queue and amdpu_ac_stop_refcnt */
 	spinlock_t queue_stop_reason_lock;
 
@@ -1432,11 +1432,11 @@ struct ieee80211_local {
 	struct timer_list sta_cleanup;
 	int sta_generation;
 
-	struct sk_buff_head pending[IEEE80211_MAX_QUEUES];
+	struct sk_buff_head pending[FEMPOWER_NUM_QUEUES];
 	struct tasklet_struct tx_pending_tasklet;
 	struct tasklet_struct wake_txqs_tasklet;
 
-	atomic_t agg_queue_stop[IEEE80211_MAX_QUEUES];
+	atomic_t agg_queue_stop[FEMPOWER_NUM_QUEUES];
 
 	/* number of interfaces with allmulti RX */
 	atomic_t iff_allmultis;
@@ -2318,6 +2318,10 @@ extern const int ieee802_1d_to_ac[8];
 
 static inline int ieee80211_ac_from_tid(int tid)
 {
+	if (tid >= IEEE80211_NUM_TIDS) {
+		return tid;
+	}
+	
 	return ieee802_1d_to_ac[tid & 7];
 }
 

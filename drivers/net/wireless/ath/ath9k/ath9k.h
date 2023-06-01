@@ -170,6 +170,7 @@ struct ath_txq {
 	u8 txq_tailidx;
 	int pending_frames;
 	struct sk_buff_head complete_q;
+	u8 current_tid;
 };
 
 struct ath_frame_info {
@@ -231,6 +232,7 @@ struct ath_buf {
 };
 
 struct ath_atx_tid {
+	u8 current_empower_tid;
 	struct list_head list;
 	struct sk_buff_head retry_q;
 	struct ath_node *an;
@@ -278,6 +280,10 @@ struct ath_tx_control {
 	u8 paprd;
 };
 
+/*
+64 maximum slices -4 for backwards-compatibility (with the 4 default ACs).
+*/
+#define FGEMPOWER_SLICE_NUM 60
 
 /**
  * @txq_map:  Index is mac80211 queue number.  This is
@@ -293,6 +299,12 @@ struct ath_tx {
 	struct ath_txq *txq_map[IEEE80211_NUM_ACS];
 	struct ath_txq *uapsdq;
 	u16 max_aggr_framelen[IEEE80211_NUM_ACS][4][32];
+	/*
+		AC 4 maps to extended property 0
+	*/
+	spinlock_t rr_lock;
+	struct ieee80211_tx_queue_params extended_queue_properties[FGEMPOWER_SLICE_NUM];
+	u8 next_tid;
 };
 
 struct ath_rx_edma {

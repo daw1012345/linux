@@ -685,6 +685,15 @@ static int ath9k_start(struct ieee80211_hw *hw)
 
 	atomic_set(&ah->intr_ref_cnt, -1);
 
+	for (int i = 0; i < FGEMPOWER_SLICE_NUM; i++) {
+		sc->tx.extended_queue_properties[i].aifs = INIT_AIFS;
+		sc->tx.extended_queue_properties[i].cw_min = INIT_CWMIN;
+		sc->tx.extended_queue_properties[i].cw_max = INIT_CWMAX;
+		sc->tx.extended_queue_properties[i].acm = false;
+		sc->tx.extended_queue_properties[i].uapsd = false;
+		sc->tx.extended_queue_properties[i].mu_edca = false;
+	}
+
 	r = ath9k_hw_reset(ah, init_channel, ah->caldata, false);
 	if (r) {
 		ath_err(common,
@@ -755,6 +764,7 @@ static void ath9k_tx(struct ieee80211_hw *hw,
 		     struct ieee80211_tx_control *control,
 		     struct sk_buff *skb)
 {
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct ath_softc *sc = hw->priv;
 	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
 	struct ath_tx_control txctl;
@@ -814,6 +824,11 @@ static void ath9k_tx(struct ieee80211_hw *hw,
 	memset(&txctl, 0, sizeof(struct ath_tx_control));
 	txctl.txq = sc->tx.txq_map[skb_get_queue_mapping(skb)];
 	txctl.sta = control->sta;
+
+	if (ieee80211_is_data(hdr->frame_control) && !(!!(info->control.flags & IEEE80211_TX_CTRL_PS_RESPONSE))) {
+		ath_err(common, "ath9k_tx: kernel tried to push a normal data frame.\n");
+		goto exit;
+	}
 
 	ath_dbg(common, XMIT, "transmitting packet, skb: %p\n", skb);
 
@@ -1711,7 +1726,7 @@ static void ath9k_sta_notify(struct ieee80211_hw *hw,
 	}
 }
 
-static int ath9k_conf_tx(struct ieee80211_hw *hw,
+static int ath9k_set_tx(struct ieee80211_hw *hw,
 			 struct ieee80211_vif *vif,
 			 unsigned int link_id, u16 queue,
 			 const struct ieee80211_tx_queue_params *params)
@@ -1723,7 +1738,7 @@ static int ath9k_conf_tx(struct ieee80211_hw *hw,
 	int ret = 0;
 
 	if (queue >= IEEE80211_NUM_ACS)
-		return 0;
+		return 0; // Is this a bug? Will the mutex not be released?
 
 	txq = sc->tx.txq_map[queue];
 
@@ -1751,6 +1766,52 @@ static int ath9k_conf_tx(struct ieee80211_hw *hw,
 	ath9k_ps_restore(sc);
 
 	return ret;
+}
+
+static int ath9k_save_tx(struct ieee80211_hw *hw,
+			 struct ieee80211_vif *vif,
+			 unsigned int link_id, u16 queue,
+			 const struct ieee80211_tx_queue_params *params)
+{
+	struct ath_softc *sc = hw->priv;
+	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
+	int ret = 0;
+
+	ath9k_ps_wakeup(sc);
+	mutex_lock(&sc->mutex);
+
+	if (queue >= FGEMPOWER_SLICE_NUM) {
+		ath_err(common, "Slice \n");
+	}
+
+	sc->tx.extended_queue_properties[queue].aifs = params->aifs;
+	sc->tx.extended_queue_properties[queue].cw_min = params->cw_min;
+	sc->tx.extended_queue_properties[queue].cw_max = params->cw_max;
+	sc->tx.extended_queue_properties[queue].txop = params->txop;
+
+	ath_dbg(common, CONFIG,
+		"Setting new EDCA params for slice [%d]\n", queue);
+
+	if (ret)
+		ath_err(common, "TXQ Update failed\n");
+
+	mutex_unlock(&sc->mutex);
+	ath9k_ps_restore(sc);
+
+	return ret;
+}
+
+static int ath9k_conf_tx(struct ieee80211_hw *hw,
+			 struct ieee80211_vif *vif,
+			 unsigned int link_id, u16 queue,
+			 const struct ieee80211_tx_queue_params *params)
+{
+	if (queue >= IEEE80211_NUM_ACS) {
+		return ath9k_save_tx(hw, vif, link_id, (queue - IEEE80211_NUM_ACS), params);
+	} else {
+		/*BW-compat*/
+		return ath9k_set_tx(hw, vif, link_id, queue, params);
+	}
 }
 
 static int ath9k_set_key(struct ieee80211_hw *hw,

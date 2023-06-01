@@ -145,6 +145,8 @@
  */
 struct device;
 
+#define FEMPOWER_NUM_QUEUES 64
+
 /**
  * enum ieee80211_max_queues - maximum number of queues
  *
@@ -2328,7 +2330,7 @@ struct ieee80211_sta {
 
 	bool support_p2p_ps;
 
-	struct ieee80211_txq *txq[IEEE80211_NUM_TIDS + 1];
+	struct ieee80211_txq *txq[FEMPOWER_NUM_QUEUES + 1];
 
 	u16 valid_links;
 	struct ieee80211_link_sta deflink;

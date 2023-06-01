@@ -1203,7 +1203,14 @@ void ieee80211_aggr_check(struct ieee80211_sub_if_data *sdata,
 	    skb->protocol == sdata->control_port_protocol)
 		return;
 
-	tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
+	if (skb->priority > IEEE80211_NUM_TIDS && skb->priority < FEMPOWER_NUM_QUEUES) {
+		tid = skb->priority;
+		// Unfortunately, we can't do block acks since it's per-tid and we would likely confuse (or crash) clients.
+		return;
+	} else {
+		tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
+	}
+	
 	if (likely(sta->ampdu_mlme.tid_tx[tid]))
 		return;
 
@@ -1270,8 +1277,8 @@ ieee80211_tx_prepare(struct ieee80211_sub_if_data *sdata,
 			ieee80211_aggr_check(sdata, tx->sta, skb);
 			tid_tx = rcu_dereference(tx->sta->ampdu_mlme.tid_tx[tid]);
 		}
-
-		if (tid_tx) {
+		// Can't do BA with 5g-EMpower
+		if (tid_tx && skb->priority < IEEE80211_NUM_TIDS) {
 			bool queued;
 
 			queued = ieee80211_tx_prep_agg(tx, skb, info,
@@ -1333,7 +1340,12 @@ static struct txq_info *ieee80211_get_txq(struct ieee80211_local *local,
 			txq = sta->sta.txq[IEEE80211_NUM_TIDS];
 		}
 	} else if (sta) {
-		u8 tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
+		u8 tid;
+		if (skb->priority >= IEEE80211_NUM_TIDS && skb->priority < FEMPOWER_NUM_QUEUES) {
+			tid = skb->priority;
+		} else {
+			tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
+		}
 
 		if (!sta->uploaded)
 			return NULL;
@@ -1786,8 +1798,11 @@ static bool __ieee80211_tx(struct ieee80211_local *local,
 		sdata = rcu_dereference(local->monitor_sdata);
 		if (sdata) {
 			vif = &sdata->vif;
-			info->hw_queue =
-				vif->hw_queue[skb_get_queue_mapping(skb)];
+			if (skb->priority > IEEE80211_NUM_TIDS) {
+				info->hw_queue = skb->priority;
+			} else {
+				info->hw_queue = vif->hw_queue[skb_get_queue_mapping(skb)];
+			}
 		} else if (ieee80211_hw_check(&local->hw, QUEUE_CONTROL)) {
 			ieee80211_purge_tx_queue(&local->hw, skbs);
 			return true;
@@ -1918,7 +1933,11 @@ bool ieee80211_tx_prepare_skb(struct ieee80211_hw *hw,
 
 	info->band = band;
 	info->control.vif = vif;
-	info->hw_queue = vif->hw_queue[skb_get_queue_mapping(skb)];
+	if (skb->priority > IEEE80211_NUM_TIDS) {
+		info->hw_queue = skb->priority;
+	} else {
+		info->hw_queue = vif->hw_queue[skb_get_queue_mapping(skb)];
+	}
 
 	if (invoke_tx_handlers(&tx))
 		return false;
@@ -1961,6 +1980,7 @@ static bool ieee80211_tx(struct ieee80211_sub_if_data *sdata,
 	}
 
 	/* initialises tx */
+	// TODO: Check what happens here?
 	res_prepare = ieee80211_tx_prepare(sdata, &tx, sta, skb);
 
 	if (unlikely(res_prepare == TX_DROP)) {
@@ -3793,6 +3813,12 @@ struct sk_buff *ieee80211_tx_dequeue(struct ieee80211_hw *hw,
 	int q = vif->hw_queue[txq->ac];
 	bool q_stopped;
 
+	if (txq->ac > IEEE80211_NUM_TIDS) {
+		q = txq->ac;
+	} else {
+		q = vif->hw_queue[txq->ac];
+	}
+
 	WARN_ON_ONCE(softirq_count() == 0);
 
 	if (!ieee80211_txq_airtime_check(hw, txq))
@@ -3932,8 +3958,11 @@ begin:
 		tx.sdata = rcu_dereference(local->monitor_sdata);
 		if (tx.sdata) {
 			vif = &tx.sdata->vif;
-			info->hw_queue =
-				vif->hw_queue[skb_get_queue_mapping(skb)];
+			if (skb->priority > IEEE80211_NUM_TIDS) {
+				info->hw_queue = skb->priority;
+			} else {
+				info->hw_queue = vif->hw_queue[skb_get_queue_mapping(skb)];
+			}
 		} else if (ieee80211_hw_check(&local->hw, QUEUE_CONTROL)) {
 			ieee80211_free_txskb(&local->hw, skb);
 			goto begin;
@@ -4269,15 +4298,15 @@ void __ieee80211_subif_start_xmit(struct sk_buff *skb,
 
 	if (IS_ERR(sta))
 		sta = NULL;
-
+	// Inside here we handle the logic of assigning a queue to an SKB. See notes inside
 	skb_set_queue_mapping(skb, ieee80211_select_queue(sdata, sta, skb));
 	ieee80211_aggr_check(sdata, sta, skb);
-
+	// WARNING: NO FAST XMIT SUPPORT WITH THIS PATCH
 	if (sta) {
 		struct ieee80211_fast_tx *fast_tx;
 
 		fast_tx = rcu_dereference(sta->fast_tx);
-
+		
 		if (fast_tx &&
 		    ieee80211_xmit_fast(sdata, sta, fast_tx, skb))
 			goto out;

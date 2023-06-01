@@ -283,19 +283,19 @@ struct tid_ampdu_rx {
 struct sta_ampdu_mlme {
 	struct mutex mtx;
 	/* rx */
-	struct tid_ampdu_rx __rcu *tid_rx[IEEE80211_NUM_TIDS];
-	u8 tid_rx_token[IEEE80211_NUM_TIDS];
-	unsigned long tid_rx_timer_expired[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
-	unsigned long tid_rx_stop_requested[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
-	unsigned long tid_rx_manage_offl[BITS_TO_LONGS(2 * IEEE80211_NUM_TIDS)];
-	unsigned long agg_session_valid[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
-	unsigned long unexpected_agg[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
+	struct tid_ampdu_rx __rcu *tid_rx[FEMPOWER_NUM_QUEUES];
+	u8 tid_rx_token[FEMPOWER_NUM_QUEUES];
+	unsigned long tid_rx_timer_expired[BITS_TO_LONGS(FEMPOWER_NUM_QUEUES)];
+	unsigned long tid_rx_stop_requested[BITS_TO_LONGS(FEMPOWER_NUM_QUEUES)];
+	unsigned long tid_rx_manage_offl[BITS_TO_LONGS(2 * FEMPOWER_NUM_QUEUES)];
+	unsigned long agg_session_valid[BITS_TO_LONGS(FEMPOWER_NUM_QUEUES)];
+	unsigned long unexpected_agg[BITS_TO_LONGS(FEMPOWER_NUM_QUEUES)];
 	/* tx */
 	struct work_struct work;
-	struct tid_ampdu_tx __rcu *tid_tx[IEEE80211_NUM_TIDS];
-	struct tid_ampdu_tx *tid_start_tx[IEEE80211_NUM_TIDS];
-	unsigned long last_addba_req_time[IEEE80211_NUM_TIDS];
-	u8 addba_req_num[IEEE80211_NUM_TIDS];
+	struct tid_ampdu_tx __rcu *tid_tx[FEMPOWER_NUM_QUEUES];
+	struct tid_ampdu_tx *tid_start_tx[FEMPOWER_NUM_QUEUES];
+	unsigned long last_addba_req_time[FEMPOWER_NUM_QUEUES];
+	u8 addba_req_num[FEMPOWER_NUM_QUEUES];
 	u8 dialog_token_allocator;
 };
 
@@ -699,7 +699,7 @@ struct sta_info {
 
 	u16 tid_seq[IEEE80211_QOS_CTL_TID_MASK + 1];
 
-	struct airtime_info airtime[IEEE80211_NUM_ACS];
+	struct airtime_info airtime[IEEE80211_NUM_ACS + FEMPOWER_NUM_QUEUES];
 	u16 airtime_weight;
 
 	/*
